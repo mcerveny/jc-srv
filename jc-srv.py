@@ -3,6 +3,7 @@ SPDX-License-Identifier: MPL-2.0
 SPDX-FileCopyrightText: 2023 Martin Cerveny <martin@c-home.cz>
 '''
 
+from inspect import currentframe
 from flask import Flask
 from flask_restful import reqparse, abort, Api, Resource, request
 import requests
@@ -18,7 +19,7 @@ import socket
 import json
 import time
 
-CAMEXEC="/root/jc-cam"
+CAMEXEC = "/root/jc-cam"
 
 app = Flask(__name__)
 api = Api(app)
@@ -60,10 +61,11 @@ RESTURICAMSDATECAM = RESTPREFIX + "/cams/%s/%d"
 RESTURICHUNKSDATE = RESTPREFIX + "/chunks/%s"
 RESTURICHUNKSDATECAM = RESTPREFIX + "/chunks/%s/%d"
 
-from inspect import currentframe
+
 def get_linenumber():
     cf = currentframe()
     return cf.f_back.f_lineno
+
 
 def add_srv(srvid):
     global cfgs, srvs, cams, recording
@@ -82,8 +84,9 @@ def add_srv(srvid):
         except:
             pass
 
+
 class Recording(Resource):
-    def get(self, camid = None):
+    def get(self, camid=None):
         global cfgs, srvs, cams, recording
         if camid:
             with lock:
@@ -94,7 +97,7 @@ class Recording(Resource):
         else:
             return dict(recording=recording)
 
-    def put(self, camid = None):
+    def put(self, camid=None):
         global cfgs, srvs, cams, recording
         if camid:
             args = parser_recording_cam.parse_args()
@@ -115,36 +118,40 @@ class Recording(Resource):
                         open(recordingfile, "x").close()
                 else:
                     if os.path.exists(recordingfile):
-                        os.remove(recordingfile) 
+                        os.remove(recordingfile)
             if not socket.gethostbyaddr(request.remote_addr)[0].startswith("srv"):
                 for srvid in srvs.keys():
                     try:
                         requests.put(RESTURIRECORDING % (srvid), json=args, timeout=1)
                     except:
-                        print("srv.py: conn error", get_linenumber()) 
+                        print("srv.py: conn error", get_linenumber())
             return '', 204
+
 
 def savecfg(backup=False):
     global cfgs, srvs, cams, recording
-    if not lock.locked(): print("ERR not locked\n")
+    if not lock.locked():
+        print("ERR not locked\n")
     cfgfile = f"/share/{hostname}/{today}/cam.cfg"
     if not os.path.exists(os.path.dirname(cfgfile)):
         os.mkdir(os.path.dirname(cfgfile), mode=0o755)
     with open(cfgfile + "_", "w") as f:
         json.dump(cfgs[today], f, indent=4)
-    if os.path.exists(cfgfile): 
+    if os.path.exists(cfgfile):
         if backup:
             os.rename(cfgfile, cfgfile+'_' + str(int(time.time())))
         else:
             os.remove(cfgfile)
     os.rename(cfgfile+'_', cfgfile)
 
+
 def loadallcfg():
     global cfgs, srvs, cams, recording
-    if not lock.locked(): print("ERR not locked\n")
+    if not lock.locked():
+        print("ERR not locked\n")
     cfgs = {}
     cfgs[today] = {}
-    for day in [ day for day in os.listdir(f"/share/{hostname}/") if re.fullmatch(r'^\d{4}-\d{2}-\d{2}$', day) and os.path.exists(f"/share/{hostname}/{day}/cam.cfg")]:
+    for day in [day for day in os.listdir(f"/share/{hostname}/") if re.fullmatch(r'^\d{4}-\d{2}-\d{2}$', day) and os.path.exists(f"/share/{hostname}/{day}/cam.cfg")]:
         with open(f"/share/{hostname}/{day}/cam.cfg", "r") as f:
             try:
                 cfgs[day] = json.load(f)
@@ -153,11 +160,11 @@ def loadallcfg():
     for srvid in srvs.keys():
         try:
             for day in requests.get(RESTURICAMS % (srvid), timeout=1).json():
-                cfg = requests.get(RESTURICAMSDATE % (srvid,day), timeout=1).json()
+                cfg = requests.get(RESTURICAMSDATE % (srvid, day), timeout=1).json()
                 if day not in cfgs:
                     cfgs[day] = cfg
                 else:
-                    for camid,cam in cfg.items():
+                    for camid, cam in cfg.items():
                         if camid not in cfgs[day]:
                             cfgs[day][camid] = cam
                         else:
@@ -168,38 +175,40 @@ def loadallcfg():
                                     cfgs[day][camid] = cam
                     # resolve colisions
                     movecams = []
-                    for camid,cam in cfgs[day].items():
-                        for _camid,_cam in cfgs[day].items():
+                    for camid, cam in cfgs[day].items():
+                        for _camid, _cam in cfgs[day].items():
                             if camid != _camid:
                                 if cam["position"] == _cam["position"] and cam["mat"] == _cam["mat"]:
                                     print(f"srv.py: cfg collision {camid} {_camid}")
-                                    if "ts" in cam and  ("ts" not in _cam or _cam["ts"] > cam["ts"]):
+                                    if "ts" in cam and ("ts" not in _cam or _cam["ts"] > cam["ts"]):
                                         movecams.append(camid)
                                         cfgs[day][camid] = dict(mat=0, position=0)
 
                     for camid in movecams:
-                        for (m,p) in [(m,p) for m in range(1,MAXMAT+1) for p in range(1,MAXPOS+1)]:
+                        for (m, p) in [(m, p) for m in range(1, MAXMAT+1) for p in range(1, MAXPOS+1)]:
                             for cam in cfgs[day].values():
-                                if cam["mat"] == m and cam["position"] == p: break
+                                if cam["mat"] == m and cam["position"] == p:
+                                    break
                             else:
                                 break
-                        cfgs[day][camid] = dict(mat=m,position=p)
+                        cfgs[day][camid] = dict(mat=m, position=p)
         except:
-            print("srv.py: conn error", get_linenumber()) 
+            print("srv.py: conn error", get_linenumber())
     savecfg()
 
+
 class Cam(Resource):
-    def get(self, day = None, camid = None):
+    def get(self, day=None, camid=None):
         global cfgs, srvs, cams, recording
         with lock:
             if day:
-                if day in cfgs: 
+                if day in cfgs:
                     return cfgs[day] if not camid else cfgs[day][str(camid)]
             else:
                 return list(cfgs.keys())
         abort(404, message="bad params")
 
-    def post(self, day = None, camid = None):
+    def post(self, day=None, camid=None):
         global cfgs, srvs, cams, recording
         if day == today and camid:
             args = parser_cam.parse_args()
@@ -212,19 +221,20 @@ class Cam(Resource):
                             cfgs[day][camidswap]["ts"] = ts
                         else:
                             # fail to swap
-                            del cfgs[day][camidswap]                            
-                        break 
+                            del cfgs[day][camidswap]
+                        break
                 cfgs[day][str(camid)] = args
                 cfgs[day][str(camid)]["ts"] = ts
                 savecfg(backup=True)
             if not socket.gethostbyaddr(request.remote_addr)[0].startswith("srv"):
                 for srvid in srvs.keys():
                     try:
-                        requests.post(RESTURICAMSDATECAM % (srvid,day,camid), json=args, timeout=1)
+                        requests.post(RESTURICAMSDATECAM % (srvid, day, camid), json=args, timeout=1)
                     except:
-                        print("srv.py: conn error", get_linenumber()) 
+                        print("srv.py: conn error", get_linenumber())
             return '', 204
         abort(404, message="bad params")
+
 
 def getpaths(day, camid):
     path = f"/share/{hostname}/{day}/cam{camid:02d}/"
@@ -237,8 +247,9 @@ def getpaths(day, camid):
         return pathcache[path]
     return []
 
+
 class Chunks(Resource):
-    def delete(self, day = None, camid = None):
+    def delete(self, day=None, camid=None):
         global cfgs, srvs, cams, recording, deleting
         if day and not camid:
             with lock:
@@ -253,13 +264,13 @@ class Chunks(Resource):
                             if cams[camid]["process"]:
                                 cams[camid]["process"].terminate()
                         # block restart until rmtree
-                        cams[camid] = dict(srvid = None, ts = MAXTS, process=None, checker=0) 
+                        cams[camid] = dict(srvid=None, ts=MAXTS, process=None, checker=0)
                 else:
-                    del(cfgs[day])
+                    del (cfgs[day])
             shutil.rmtree(f"/share/{hostname}/{day}/", ignore_errors=True)
             with lock:
                 if day == today:
-                    cams={}
+                    cams = {}
                     savecfg()
                     if recording:
                         open(recordingfile, "x").close()
@@ -267,27 +278,27 @@ class Chunks(Resource):
             if not socket.gethostbyaddr(request.remote_addr)[0].startswith("srv"):
                 for srvid in srvs.keys():
                     try:
-                        requests.delete(RESTURICHUNKSDATE % (srvid,day), timeout=90)
+                        requests.delete(RESTURICHUNKSDATE % (srvid, day), timeout=90)
                     except:
-                        print("srv.py: conn error", get_linenumber()) 
+                        print("srv.py: conn error", get_linenumber())
             with lock:
                 deleting = None
             return '', 204
         abort(404, message="bad params")
-    
-    def get(self, day = None, camid = None):
+
+    def get(self, day=None, camid=None):
         global cfgs, srvs, cams, recording
         if day:
             with lock:
                 if deleting == day:
                     return []
                 if not re.fullmatch(r'^\d{4}-\d{2}-\d{2}$', day) or day not in cfgs:
-                    abort(404, message="bad params")            
+                    abort(404, message="bad params")
             list = []
             if camid:
                 list.append(dict(srvid=srvid_own, camid=camid, ts=getpaths(day, camid)))
             else:
-                for camid in [ int(camname[-2:]) for camname in os.listdir(f"/share/{hostname}/{day}/") if re.fullmatch(r'^cam\d{2}$', camname)]:
+                for camid in [int(camname[-2:]) for camname in os.listdir(f"/share/{hostname}/{day}/") if re.fullmatch(r'^cam\d{2}$', camname)]:
                     list.append(dict(srvid=srvid_own, camid=camid, ts=getpaths(day, camid)))
 
             if not socket.gethostbyaddr(request.remote_addr)[0].startswith("srv"):
@@ -300,38 +311,41 @@ class Chunks(Resource):
                             list.append(dict(srvid=srvid, camid=camid, ts=srvs[srvid][day][camid]))
                         else:
                             for camid in srvs[srvid][day].keys():
-                                list.append(dict(srvid=srvid, camid=camid, ts=srvs[srvid][day][camid]))                                
-                    else:                        
+                                list.append(dict(srvid=srvid, camid=camid, ts=srvs[srvid][day][camid]))
+                    else:
                         try:
                             if camid:
-                                response = requests.get(RESTURICHUNKSDATECAM % (srvid,day,camid), timeout=1)
+                                response = requests.get(RESTURICHUNKSDATECAM % (srvid, day, camid), timeout=1)
                                 line = response.json()[0]
                                 srvs[srvid][day][camid] = line["ts"]
                                 if line["srvid"] != srvid or line["camid"] != camid:
                                     print(f"srv.py: ERR srv/camid not match {line['srvid']} {srvid} {line['camid']} {camid}")
                                 list.extend(response.json())
                             else:
-                                response = requests.get(RESTURICHUNKSDATE % (srvid,day), timeout=1)
+                                response = requests.get(RESTURICHUNKSDATE % (srvid, day), timeout=1)
                                 for line in response.json():
                                     srvs[srvid][day][line["camid"]] = line["ts"]
                                     if line["srvid"] != srvid:
                                         print(f"srv.py: ERR srv not match {line['srvid']} {srvid}")
                                 list.extend(response.json())
                         except:
-                            print("srv.py: conn error", get_linenumber()) 
+                            print("srv.py: conn error", get_linenumber())
             return list
         abort(404, message="bad params")
+
 
 api.add_resource(Recording, '/api/v1/recording', '/api/v1/recording/<int:camid>')
 api.add_resource(Cam, '/api/v1/cams', '/api/v1/cams/<string:day>', '/api/v1/cams/<string:day>/<int:camid>')
 api.add_resource(Chunks, '/api/v1/chunks/<string:day>', '/api/v1/chunks/<string:day>/<int:camid>')
 
+
 def live_thread():
     global cfgs, srvs, cams, recording
     print("LIVE thread start")
     while True:
-        for srvid in range(1,9):
-            if srvid == srvid_own: continue
+        for srvid in range(1, 9):
+            if srvid == srvid_own:
+                continue
             if subprocess.run(["/usr/bin/ping", "-c", "1", "-W", "0.1", f"srv{srvid:d}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
                 add_srv(srvid)
             if srvid in srvs:
@@ -341,12 +355,12 @@ def live_thread():
                     print(f"srv.py: DELETING srv{srvid}")
                     with lock:
                         for camid in [camid for camid in cams if cams[camid]["srvid"] == srvid]:
-                            del cams[camid] 
+                            del cams[camid]
                         del srvs[srvid]
                         loadallcfg()
             time.sleep(0.1)
 
-        for camid in range(1,33):
+        for camid in range(1, 33):
             if subprocess.run(["/usr/bin/ping", "-c", "1", "-W", "0.1", f"cam{camid:02d}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
                 while camid not in cams:
                     print(f"srv.py: ADD cam{camid:02d}")
@@ -361,7 +375,7 @@ def live_thread():
                                 win_srvid = camrec["srvid"]
                                 win_ts = camrec["ts"]
                         except:
-                            print("srv.py: conn error", get_linenumber()) 
+                            print("srv.py: conn error", get_linenumber())
                     if win_srvid:
                         # found actual cam streaming
                         with lock:
@@ -372,7 +386,7 @@ def live_thread():
                         with lock:
                             ts = int(time.time()*1000)*10+srvid_own
                             cams[camid] = dict(srvid=srvid_own, ts=ts, process=None, checker=CHECKER)
-    
+
                         # push srvid_our if not overriden
                         for srvid in srvs.keys():
                             if cams[camid]["srvid"] == srvid_own:
@@ -382,7 +396,7 @@ def live_thread():
                                     print("srv.py: conn error", get_linenumber())
 
                 # check for validity
-                if cams[camid]["checker"]>0:
+                if cams[camid]["checker"] > 0:
                     cams[camid]["checker"] -= 1
                     if cams[camid]["srvid"] == srvid_own:
                         for srvid in srvs.keys():
@@ -394,7 +408,7 @@ def live_thread():
                                         del cams[camid]
                                     break
                             except:
-                                print("srv.py: conn error", get_linenumber()) 
+                                print("srv.py: conn error", get_linenumber())
                         else:
                             print(f"srv.py: arbitration winner srv{cams[camid]['srvid']} cam{camid}")
                     else:
@@ -406,21 +420,22 @@ def live_thread():
                     if str(camid) not in cfgs[today]:
                         loadallcfg()
                         if str(camid) not in cfgs[today]:
-                            for (m,p) in [(m,p) for m in range(1,MAXMAT+1) for p in range(1,MAXPOS+1)]:
+                            for (m, p) in [(m, p) for m in range(1, MAXMAT+1) for p in range(1, MAXPOS+1)]:
                                 for cam in cfgs[today].values():
-                                    if cam["mat"] == m and cam["position"] == p: break
+                                    if cam["mat"] == m and cam["position"] == p:
+                                        break
                                 else:
                                     break
-                            cfgs[today][str(camid)] = dict(mat=m,position=p)
+                            cfgs[today][str(camid)] = dict(mat=m, position=p)
                             savecfg()
 
                     # check and start/stop
-                    (m,p) = (cfgs[today][str(camid)]["mat"], cfgs[today][str(camid)]["position"])                    
+                    (m, p) = (cfgs[today][str(camid)]["mat"], cfgs[today][str(camid)]["position"])
                     if recording:
-                        if cams[camid]["srvid"] == srvid_own and cams[camid]["checker"]==0 and (not cams[camid]["process"] or cams[camid]["process"].poll()):
+                        if cams[camid]["srvid"] == srvid_own and cams[camid]["checker"] == 0 and (not cams[camid]["process"] or cams[camid]["process"].poll()):
                             print(f"srv.py: START cam{camid:02d}")
-                            cams[camid]["process"] = subprocess.Popen([CAMEXEC, f"/share/{hostname}/{today}/",f"cam{camid:02d}",f"{m}", f"{p}"])
-                    else:                 
+                            cams[camid]["process"] = subprocess.Popen([CAMEXEC, f"/share/{hostname}/{today}/", f"cam{camid:02d}", f"{m}", f"{p}"])
+                    else:
                         if cams[camid]["process"]:
                             print(f"srv.py: STOP cam{camid:02d}")
                             cams[camid]["process"].terminate()
@@ -447,4 +462,4 @@ if __name__ == '__main__':
     livetid = threading.Thread(target=live_thread)
     livetid.start()
 
-    app.run(threaded=True, host= '0.0.0.0')
+    app.run(threaded=True, host='0.0.0.0')
