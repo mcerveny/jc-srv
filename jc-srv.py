@@ -33,9 +33,13 @@ parser_recording_cam.add_argument('srvid', type=int, help='recording server for 
 parser_recording_cam.add_argument('ts', type=int, help='milisec timestamp recording server for cam', required=True)
 
 parser_cam = reqparse.RequestParser(bundle_errors=True)
-parser_cam.add_argument('mat', type=int, help='maid', required=True)
+parser_cam.add_argument('mat', type=int, help='matid', required=True)
 parser_cam.add_argument('position', type=int, help='position', required=True)
 parser_cam.add_argument('ts', type=int, help='timestamp', required=False)
+
+parser_player = reqparse.RequestParser(bundle_errors=True)
+parser_player.add_argument('camid', type=int, help='camid', required=True)
+parser_player.add_argument('ts', type=int, help='timestamp', required=False)
 
 recording = False
 deleting = None
@@ -48,6 +52,7 @@ pathcache = {}
 pathts = {}
 cams = {}
 srvs = {}
+players = {}
 MAXMAT = 8
 MAXPOS = 4
 MAXTS = 999999999999999
@@ -60,12 +65,87 @@ RESTURICAMSDATE = RESTPREFIX + "/cams/%s"
 RESTURICAMSDATECAM = RESTPREFIX + "/cams/%s/%d"
 RESTURICHUNKSDATE = RESTPREFIX + "/chunks/%s"
 RESTURICHUNKSDATECAM = RESTPREFIX + "/chunks/%s/%d"
+RESTURIPLAYERS = RESTPREFIX + "/players"
+RESTURIPLAYERSPLAYER = RESTPREFIX + "/players/%d"
 
 
 def get_linenumber():
     cf = currentframe()
     return cf.f_back.f_lineno
 
+def saveplayers(backup=False):
+    global players
+    if not lock.locked():
+        print("ERR not locked\n")
+    playersfile = f"/share/{hostname}/{today}/player.cfg"
+    if not os.path.exists(os.path.dirname(playersfile)):
+        os.mkdir(os.path.dirname(playersfile), mode=0o755)
+    with open(playersfile + "_", "w") as f:
+        json.dump(players, f, indent=4)
+    if os.path.exists(playersfile):
+        if backup:
+            os.rename(playersfile, playersfile+'_' + str(int(time.time())))
+        else:
+            os.remove(playersfile)
+    os.rename(playersfile+'_', playersfile)
+
+
+def loadplayers():
+    global players, srvs
+    if not lock.locked():
+        print("ERR not locked\n")
+    players = {}
+    playersfile = f"/share/{hostname}/{today}/player.cfg"
+    if os.path.exists(playersfile):
+        with open(playersfile, "r") as f:
+            try:
+                players = json.load(f)
+            except:
+                print(f"srv.py: players json failed {playersfile}")
+    for srvid in srvs.keys():
+        try:
+            for playerid in requests.get(RESTURIPLAYERS % (srvid), timeout=1).json():
+                playercfg = requests.get(RESTURIPLAYERSPLAYER % (srvid, int(playerid)), timeout=1).json()
+                if playerid not in players:
+                    players[playerid] = playercfg
+                else:
+                    if "ts" in playercfg and ("ts" not in players[playerid] or players[playerid]["ts"] > playercfg["ts"]):
+                        players[playerid] = playercfg
+        except:
+            print("srv.py: conn error", get_linenumber())
+    saveplayers()
+
+class Players(Resource):
+    def get(self, playerid=None):
+        global players
+        if playerid:
+            with lock:
+                if str(playerid) in players:
+                    return players[str(playerid)]
+                else:
+                    return {}
+        else:
+            return list(players.keys())
+
+    def post(self, playerid=None):
+        global players, srvs
+        if playerid:
+            args = parser_player.parse_args()
+            if not socket.gethostbyaddr(request.remote_addr)[0].startswith("srv"):
+                args["ts"] = int(time.time())
+            with lock:
+                players[str(playerid)] = args
+                saveplayers()
+            if not socket.gethostbyaddr(request.remote_addr)[0].startswith("srv"):
+                with lock: 
+                    _srvs = list(srvs.keys()) 
+                for srvid in _srvs:
+                    try:
+                        requests.post(RESTURIPLAYERSPLAYER % (srvid, playerid), json=args, timeout=1)
+                    except:
+                        print("srv.py: conn error", get_linenumber())
+            return '', 204
+        abort(404, message="bad params")
 
 def add_srv(srvid):
     global cfgs, srvs, cams, recording
@@ -80,7 +160,8 @@ def add_srv(srvid):
 
             with lock:
                 srvs[srvid] = {}
-                loadallcfg()
+                loadcfg()
+                loadplayers()
         except:
             pass
 
@@ -147,7 +228,7 @@ def savecfg(backup=False):
     os.rename(cfgfile+'_', cfgfile)
 
 
-def loadallcfg():
+def loadcfg():
     global cfgs, srvs, cams, recording
     if not lock.locked():
         print("ERR not locked\n")
@@ -276,6 +357,7 @@ class Chunks(Resource):
                 if day == today:
                     cams = {}
                     savecfg()
+                    saveplayers()
                     if recording:
                         open(recordingfile, "x").close()
 
@@ -345,6 +427,7 @@ class Chunks(Resource):
 api.add_resource(Recording, '/api/v1/recording', '/api/v1/recording/<int:camid>')
 api.add_resource(Cam, '/api/v1/cams', '/api/v1/cams/<string:day>', '/api/v1/cams/<string:day>/<int:camid>')
 api.add_resource(Chunks, '/api/v1/chunks/<string:day>', '/api/v1/chunks/<string:day>/<int:camid>')
+api.add_resource(Players, '/api/v1/players', '/api/v1/players/<int:playerid>')
 
 
 def live_thread():
@@ -365,7 +448,8 @@ def live_thread():
                         for camid in [camid for camid in cams if cams[camid]["srvid"] == srvid]:
                             del cams[camid]
                         del srvs[srvid]
-                        loadallcfg()
+                        loadcfg()
+                        loadplayers()
             time.sleep(0.1)
 
         for camid in range(1, 33):
@@ -433,7 +517,7 @@ def live_thread():
                     with lock:
                         # extend config for new cam if needed
                         if str(camid) not in cfgs[today]:
-                            loadallcfg()
+                            loadcfg()
                             if str(camid) not in cfgs[today]:
                                 for (m, p) in [(m, p) for m in range(1, MAXMAT+1) for p in range(1, MAXPOS+1)]:
                                     for cam in cfgs[today].values():
@@ -471,8 +555,8 @@ if __name__ == '__main__':
     with lock:
         if not os.path.exists(f"/share/{hostname}/{today}/cam.cfg"):
             cfgs[today] = {}
-        loadallcfg()
-        savecfg()
+        loadcfg()
+        loadplayers()
 
     livetid = threading.Thread(target=live_thread)
     livetid.start()
