@@ -41,6 +41,11 @@ parser_player = reqparse.RequestParser(bundle_errors=True)
 parser_player.add_argument('camid', type=int, help='camid', required=True)
 parser_player.add_argument('ts', type=int, help='timestamp', required=False)
 
+parser_mat = reqparse.RequestParser(bundle_errors=True)
+parser_mat.add_argument('medicals', type=list, location='json', help='medicals', required=False)
+parser_mat.add_argument('bookmarks', type=list, location='json', help='bookmarks', required=False)
+parser_mat.add_argument('ts', type=int, help='timestamp', required=False)
+
 recording = False
 deleting = None
 cfgs = {}
@@ -53,6 +58,7 @@ pathts = {}
 cams = {}
 srvs = {}
 players = {}
+mats = {}
 MAXMAT = 8
 MAXPOS = 4
 MAXTS = 999999999999999
@@ -67,11 +73,96 @@ RESTURICHUNKSDATE = RESTPREFIX + "/chunks/%s"
 RESTURICHUNKSDATECAM = RESTPREFIX + "/chunks/%s/%d"
 RESTURIPLAYERS = RESTPREFIX + "/players"
 RESTURIPLAYERSPLAYER = RESTPREFIX + "/players/%d"
+RESTURIMATSDATE = RESTPREFIX + "/mats/%s"
+RESTURIMATSDATEMAT = RESTPREFIX + "/mats/%s/%d"
 
 
 def get_linenumber():
     cf = currentframe()
     return cf.f_back.f_lineno
+
+
+def savemats(day, backup=False):
+    global mats
+    if not lock.locked():
+        print("ERR not locked\n")
+    matsfile = f"/share/{hostname}/{day}/mats.cfg"
+    if not os.path.exists(os.path.dirname(matsfile)):
+        os.mkdir(os.path.dirname(matsfile), mode=0o755)
+    with open(matsfile + "_", "w") as f:
+        json.dump(mats[day], f, indent=4)
+    if os.path.exists(matsfile):
+        if backup:
+            os.rename(matsfile, matsfile+'_' + str(int(time.time())))
+        else:
+            os.remove(matsfile)
+    os.rename(matsfile+'_', matsfile)
+
+
+def loadmats():
+    global cfg, mats, srvs
+    if not lock.locked():
+        print("ERR not locked\n")
+    for day in cfgs.keys():
+        daymats = {}
+        for matid in [str(matid) for matid in range(1, MAXMAT+1)]:
+            daymats[matid] = dict(bookmarks=[], medicals=[])
+        matsfile = f"/share/{hostname}/{day}/mats.cfg"
+        if os.path.exists(matsfile):
+            with open(matsfile, "r") as f:
+                try:
+                    daymats = json.load(f)
+                except:
+                    print(f"srv.py: mats json failed {matsfile}")
+        mats[day] = daymats
+        for srvid in srvs.keys():
+            try:
+                daymats = requests.get(RESTURIMATSDATE % (srvid, day), timeout=1).json()
+                for matid in [str(matid) for matid in range(1, MAXMAT+1)]:
+                    if matid not in mats[day]:
+                        mats[day][matid] = daymats[matid]
+                    else:
+                        if "ts" in daymats[matid] and ("ts" not in mats[day][matid] or daymats[matid]["ts"] > mats[day][matid]["ts"]):
+                            mats[day][matid] = daymats[matid]
+            except:
+                print("srv.py: conn error", get_linenumber())
+        savemats(day)
+
+
+class Mats(Resource):
+    def get(self, day=None, matid=None):
+        global mats
+        with lock:
+            if matid:
+                if 1 <= matid <= MAXMAT and day in mats:
+                    return mats[day][str(matid)]
+            else:
+                if day in mats:
+                    return mats[day]
+        abort(404, message="bad params")
+
+    def patch(self, day=None, matid=None):
+        global mats, srvs
+        if matid and day in mats:
+            args = parser_mat.parse_args()
+            if not socket.gethostbyaddr(request.remote_addr)[0].startswith("srv"):
+                args["ts"] = int(time.time())
+            with lock:
+                for key in ["medicals", "bookmarks", "ts"]:
+                    if key in args and args[key] != None:
+                        mats[day][str(matid)][key] = args[key]
+                savemats(day)
+            if not socket.gethostbyaddr(request.remote_addr)[0].startswith("srv"):
+                with lock:
+                    _srvs = list(srvs.keys())
+                for srvid in _srvs:
+                    try:
+                        requests.post(RESTURIMATSDATEMAT % (srvid, day, matid), json=args, timeout=1)
+                    except:
+                        print("srv.py: conn error", get_linenumber())
+            return '', 204
+        abort(404, message="bad params")
+
 
 def saveplayers(backup=False):
     global players
@@ -115,6 +206,7 @@ def loadplayers():
             print("srv.py: conn error", get_linenumber())
     saveplayers()
 
+
 class Players(Resource):
     def get(self, playerid=None):
         global players
@@ -137,8 +229,8 @@ class Players(Resource):
                 players[str(playerid)] = args
                 saveplayers()
             if not socket.gethostbyaddr(request.remote_addr)[0].startswith("srv"):
-                with lock: 
-                    _srvs = list(srvs.keys()) 
+                with lock:
+                    _srvs = list(srvs.keys())
                 for srvid in _srvs:
                     try:
                         requests.post(RESTURIPLAYERSPLAYER % (srvid, playerid), json=args, timeout=1)
@@ -146,6 +238,7 @@ class Players(Resource):
                         print("srv.py: conn error", get_linenumber())
             return '', 204
         abort(404, message="bad params")
+
 
 def add_srv(srvid):
     global cfgs, srvs, cams, recording
@@ -162,6 +255,7 @@ def add_srv(srvid):
                 srvs[srvid] = {}
                 loadcfg()
                 loadplayers()
+                loadmats()
         except:
             pass
 
@@ -201,8 +295,8 @@ class Recording(Resource):
                     if os.path.exists(recordingfile):
                         os.remove(recordingfile)
             if not socket.gethostbyaddr(request.remote_addr)[0].startswith("srv"):
-                with lock: 
-                    _srvs = list(srvs.keys()) 
+                with lock:
+                    _srvs = list(srvs.keys())
                 for srvid in _srvs:
                     try:
                         requests.put(RESTURIRECORDING % (srvid), json=args, timeout=1)
@@ -310,8 +404,8 @@ class Cam(Resource):
                 cfgs[day][str(camid)]["ts"] = ts
                 savecfg(backup=True)
             if not socket.gethostbyaddr(request.remote_addr)[0].startswith("srv"):
-                with lock: 
-                    _srvs = list(srvs.keys()) 
+                with lock:
+                    _srvs = list(srvs.keys())
                 for srvid in _srvs:
                     try:
                         requests.post(RESTURICAMSDATECAM % (srvid, day, camid), json=args, timeout=1)
@@ -362,8 +456,8 @@ class Chunks(Resource):
                         open(recordingfile, "x").close()
 
             if not socket.gethostbyaddr(request.remote_addr)[0].startswith("srv"):
-                with lock: 
-                    _srvs = list(srvs.keys()) 
+                with lock:
+                    _srvs = list(srvs.keys())
                 for srvid in _srvs:
                     try:
                         requests.delete(RESTURICHUNKSDATE % (srvid, day), timeout=90)
@@ -390,7 +484,7 @@ class Chunks(Resource):
                     chlist.append(dict(srvid=srvid_own, camid=camid, ts=getpaths(day, camid)))
 
             if not socket.gethostbyaddr(request.remote_addr)[0].startswith("srv"):
-                with lock: 
+                with lock:
                     _srvs = list(srvs.keys())
                 for srvid in _srvs:
                     if day not in srvs[srvid]:
@@ -428,6 +522,7 @@ api.add_resource(Recording, '/api/v1/recording', '/api/v1/recording/<int:camid>'
 api.add_resource(Cam, '/api/v1/cams', '/api/v1/cams/<string:day>', '/api/v1/cams/<string:day>/<int:camid>')
 api.add_resource(Chunks, '/api/v1/chunks/<string:day>', '/api/v1/chunks/<string:day>/<int:camid>')
 api.add_resource(Players, '/api/v1/players', '/api/v1/players/<int:playerid>')
+api.add_resource(Mats, '/api/v1/mats/<string:day>', '/api/v1/mats/<string:day>/<int:matid>')
 
 
 def live_thread():
@@ -450,6 +545,7 @@ def live_thread():
                         del srvs[srvid]
                         loadcfg()
                         loadplayers()
+                        loadmats()
             time.sleep(0.1)
 
         for camid in range(1, 33):
@@ -460,8 +556,8 @@ def live_thread():
                     win_ts = MAXTS
 
                     # first try do receive actual cam streaming
-                    with lock: 
-                        _srvs = list(srvs.keys()) 
+                    with lock:
+                        _srvs = list(srvs.keys())
                     for srvid in _srvs:
                         try:
                             camrec = requests.get(RESTURIRECORDINGCAM % (srvid, camid), timeout=1).json()
@@ -482,8 +578,8 @@ def live_thread():
                             cams[camid] = dict(srvid=srvid_own, ts=ts, process=None, checker=CHECKER)
 
                         # push srvid_our if not overriden
-                        with lock: 
-                            _srvs = list(srvs.keys()) 
+                        with lock:
+                            _srvs = list(srvs.keys())
                         for srvid in _srvs:
                             if cams[camid]["srvid"] == srvid_own:
                                 try:
@@ -495,8 +591,8 @@ def live_thread():
                 if cams[camid]["checker"] > 0:
                     cams[camid]["checker"] -= 1
                     if cams[camid]["srvid"] == srvid_own:
-                        with lock: 
-                            _srvs = list(srvs.keys()) 
+                        with lock:
+                            _srvs = list(srvs.keys())
                         for srvid in _srvs:
                             try:
                                 response = requests.get(RESTURIRECORDINGCAM % (srvid, camid), timeout=1)
@@ -557,6 +653,7 @@ if __name__ == '__main__':
             cfgs[today] = {}
         loadcfg()
         loadplayers()
+        loadmats()
 
     livetid = threading.Thread(target=live_thread)
     livetid.start()
