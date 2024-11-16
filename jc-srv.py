@@ -157,7 +157,7 @@ class Mats(Resource):
                     _srvs = list(srvs.keys())
                 for srvid in _srvs:
                     try:
-                        requests.post(RESTURIMATSDATEMAT % (srvid, day, matid), json=args, timeout=1)
+                        requests.patch(RESTURIMATSDATEMAT % (srvid, day, matid), json=args, timeout=1)
                     except:
                         print("srv.py: conn error", get_linenumber())
             return '', 204
