@@ -49,6 +49,7 @@ parser_mat.add_argument('ts', type=int, help='timestamp', required=False)
 recording = False
 deleting = None
 cfgs = {}
+cfgslocal = []
 today = datetime.datetime.now().strftime('%Y-%m-%d')
 hostname = os.uname()[1]
 srvid_own = int(hostname[-1])
@@ -83,9 +84,11 @@ def get_linenumber():
 
 
 def savemats(day, backup=False):
-    global mats
+    global cfgslocal, mats
     if not lock.locked():
         print("ERR not locked\n")
+    if day not in cfgslocal:
+        return
     matsfile = f"/share/{hostname}/{day}/mats.cfg"
     if not os.path.exists(os.path.dirname(matsfile)):
         os.mkdir(os.path.dirname(matsfile), mode=0o755)
@@ -100,9 +103,10 @@ def savemats(day, backup=False):
 
 
 def loadmats():
-    global cfg, mats, srvs
+    global cfgs, mats, srvs
     if not lock.locked():
         print("ERR not locked\n")
+    srvdays = {}
     for day in cfgs.keys():
         daymats = {}
         for matid in [str(matid) for matid in range(1, MAXMAT+1)]:
@@ -117,15 +121,20 @@ def loadmats():
         mats[day] = daymats
         for srvid in srvs.keys():
             try:
-                daymats = requests.get(RESTURIMATSDATE % (srvid, day), timeout=1).json()
-                for matid in [str(matid) for matid in range(1, MAXMAT+1)]:
-                    if matid not in mats[day]:
-                        mats[day][matid] = daymats[matid]
-                    else:
-                        if "ts" in daymats[matid] and ("ts" not in mats[day][matid] or daymats[matid]["ts"] > mats[day][matid]["ts"]):
-                            mats[day][matid] = daymats[matid]
+                if "retry" not in srvs[srvid]:
+                    if srvid not in srvdays:
+                        srvdays[srvid] = requests.get(RESTURICAMS % (srvid), timeout=1).json()
+                    if day in srvdays[srvid]:
+                        daymats = requests.get(RESTURIMATSDATE % (srvid, day), timeout=1).json()
+                        for matid in [str(matid) for matid in range(1, MAXMAT+1)]:
+                            if matid not in mats[day]:
+                                mats[day][matid] = daymats[matid]
+                            else:
+                                if "ts" in daymats[matid] and ("ts" not in mats[day][matid] or daymats[matid]["ts"] > mats[day][matid]["ts"]):
+                                    mats[day][matid] = daymats[matid]
             except:
                 print("srv.py: conn error", get_linenumber())
+                srvs[srvid]["retry"] = True
         savemats(day)
 
 
@@ -168,7 +177,7 @@ def saveplayers(backup=False):
     global players
     if not lock.locked():
         print("ERR not locked\n")
-    playersfile = f"/share/{hostname}/{today}/player.cfg"
+    playersfile = f"/share/{hostname}/{today}/players.cfg"
     if not os.path.exists(os.path.dirname(playersfile)):
         os.mkdir(os.path.dirname(playersfile), mode=0o755)
     with open(playersfile + "_", "w") as f:
@@ -186,7 +195,7 @@ def loadplayers():
     if not lock.locked():
         print("ERR not locked\n")
     players = {}
-    playersfile = f"/share/{hostname}/{today}/player.cfg"
+    playersfile = f"/share/{hostname}/{today}/players.cfg"
     if os.path.exists(playersfile):
         with open(playersfile, "r") as f:
             try:
@@ -204,6 +213,7 @@ def loadplayers():
                         players[playerid] = playercfg
         except:
             print("srv.py: conn error", get_linenumber())
+            srvs[srvid]["retry"] = True
     saveplayers()
 
 
@@ -242,7 +252,7 @@ class Players(Resource):
 
 def add_srv(srvid):
     global cfgs, srvs, cams, recording
-    if srvid not in srvs:
+    if srvid not in srvs or "retry" in srvs[srvid]:
         try:
             _recording = requests.get(RESTURIRECORDING % (srvid), timeout=1).json()["recording"]
             if _recording and not recording:
@@ -256,6 +266,9 @@ def add_srv(srvid):
                 loadcfg()
                 loadplayers()
                 loadmats()
+                if "retry" in srvs[srvid]:
+                    print(f"srv.py: RETRY srv{srvid}")
+                    del srvs[srvid]
         except:
             pass
 
@@ -277,12 +290,13 @@ class Recording(Resource):
         if camid:
             args = parser_recording_cam.parse_args()
             add_srv(args["srvid"])
-            with lock:
-                if camid not in cams or args["ts"] < cams[camid]["ts"]:
-                    print(f"srv.py: winner put srv{args['srvid']} cam{camid}")
-                    if camid in cams and cams[camid]["process"]:
-                        cams[camid]["process"].terminate()
-                    cams[camid] = dict(srvid=args["srvid"], ts=args["ts"], process=None, checker=0)
+            if args["srvid"] in srvs:
+                with lock:
+                    if camid not in cams or args["ts"] < cams[camid]["ts"]:
+                        print(f"srv.py: winner put srv{args['srvid']} cam{camid}")
+                        if camid in cams and cams[camid]["process"]:
+                            cams[camid]["process"].terminate()
+                        cams[camid] = dict(srvid=args["srvid"], ts=args["ts"], process=None, checker=0)
             return '', 204
         else:
             args = parser_recording.parse_args()
@@ -309,7 +323,7 @@ def savecfg(backup=False):
     global cfgs, srvs, cams, recording
     if not lock.locked():
         print("ERR not locked\n")
-    cfgfile = f"/share/{hostname}/{today}/cam.cfg"
+    cfgfile = f"/share/{hostname}/{today}/cams.cfg"
     if not os.path.exists(os.path.dirname(cfgfile)):
         os.mkdir(os.path.dirname(cfgfile), mode=0o755)
     with open(cfgfile + "_", "w") as f:
@@ -323,17 +337,19 @@ def savecfg(backup=False):
 
 
 def loadcfg():
-    global cfgs, srvs, cams, recording
+    global cfgs, srvs, cams, recording, cfgslocal
     if not lock.locked():
         print("ERR not locked\n")
     cfgs = {}
     cfgs[today] = {}
-    for day in [day for day in os.listdir(f"/share/{hostname}/") if re.fullmatch(r'^\d{4}-\d{2}-\d{2}$', day) and os.path.exists(f"/share/{hostname}/{day}/cam.cfg")]:
-        with open(f"/share/{hostname}/{day}/cam.cfg", "r") as f:
+    cfgslocal = []
+    for day in [day for day in os.listdir(f"/share/{hostname}/") if re.fullmatch(r'^\d{4}-\d{2}-\d{2}$', day) and os.path.exists(f"/share/{hostname}/{day}/cams.cfg")]:
+        with open(f"/share/{hostname}/{day}/cams.cfg", "r") as f:
             try:
                 cfgs[day] = json.load(f)
+                cfgslocal.append(day)
             except:
-                print(f"srv.py: cfg json failed /share/{hostname}/{day}/cam.cfg")
+                print(f"srv.py: cfg json failed /share/{hostname}/{day}/cams.cfg")
     for srvid in srvs.keys():
         try:
             for day in requests.get(RESTURICAMS % (srvid), timeout=1).json():
@@ -371,6 +387,7 @@ def loadcfg():
                         cfgs[day][camid] = dict(mat=m, position=p)
         except:
             print("srv.py: conn error", get_linenumber())
+            srvs[srvid]["retry"] = True
     savecfg()
 
 
@@ -381,6 +398,7 @@ class Cam(Resource):
             if day:
                 if day in cfgs:
                     return cfgs[day] if not camid else cfgs[day][str(camid)]
+                return {}
             else:
                 return list(cfgs.keys())
         abort(404, message="bad params")
@@ -646,10 +664,10 @@ def live_thread():
 
 
 if __name__ == '__main__':
-    print("VERSION v1.2024-10-09")
+    print("VERSION v1.2024-12-10")
     recording = os.path.exists(recordingfile)
     with lock:
-        if not os.path.exists(f"/share/{hostname}/{today}/cam.cfg"):
+        if not os.path.exists(f"/share/{hostname}/{today}/cams.cfg"):
             cfgs[today] = {}
         loadcfg()
         loadplayers()
